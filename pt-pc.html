@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>可内拖拼图游戏</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { background: #f8fafc; padding: 2rem; font-family: 'Inter', sans-serif; }
+        .container { max-width: 1200px; margin: 0 auto; }
+        .upload-btn {
+            padding: 12px 24px;
+            background: #2563eb;
+            color: white;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: 0.3s;
+            display: inline-block;
+            margin-bottom: 2rem;
+        }
+        .upload-btn:hover { background: #1d4ed8; }
+        .game-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 2rem;
+        }
+        .section {
+            background: white;
+            padding: 1.5rem;
+            border-radius: 12px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.05);
+        }
+        .puzzle-container {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 4px; /* 优化1：缩小缝隙为4px */
+        }
+        .puzzle-piece {
+            cursor: move;
+            transition: 0.3s;
+            background-size: cover;
+            background-repeat: no-repeat;
+            border: 2px solid transparent;
+        }
+        .puzzle-piece.dragging {
+            opacity: 0.7;
+            transform: scale(0.98);
+            border-color: #2563eb;
+        }
+        .target-placeholder {
+            background: #f8fafc;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #94a3b8;
+            font-size: 0.875rem;
+        }
+        .correct-position {
+            border-color: #22c55e;
+            box-shadow: 0 0 0 2px rgba(34, 197, 94, 0.1);
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <input type="file" id="uploadInput" accept="image/*" hidden>
+        <label for="uploadInput" class="upload-btn">上传1:1比例图片开始游戏</label>
+        <div class="game-grid">
+            <div class="section">
+                <h3 class="title">打乱的拼图</h3>
+                <div class="puzzle-container" id="puzzleGrid"></div>
+            </div>
+            <div class="section">
+                <h3 class="title">目标区域</h3>
+                <div class="puzzle-container" id="targetGrid"></div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const uploadInput = document.getElementById('uploadInput');
+        const puzzleGrid = document.getElementById('puzzleGrid');
+        const targetGrid = document.getElementById('targetGrid');
+        let sourceImage = null;
+        let pieces = [];  // 存储所有拼图块信息 {element, correctIndex}
+
+        uploadInput.addEventListener('change', handleImageUpload);
+
+        function handleImageUpload(e) {
+            const file = e.target.files[0];
+            if (!file || !file.type.startsWith('image/')) {
+                alert('请选择有效的图片文件！');
+                return;
+            }
+
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                const img = new Image();
+                img.onload = () => {
+                    if (img.width !== img.height) {
+                        alert('请上传1:1比例的图片！');
+                        return;
+                    }
+                    sourceImage = img;
+                    initializeGame(img.width);
+                };
+                img.src = e.target.result;
+            };
+            reader.readAsDataURL(file);
+        }
+
+        function initializeGame(imgSize) {
+            const pieceSize = imgSize / 3;
+            pieces = [];
+
+            // 清空容器
+            puzzleGrid.innerHTML = '';
+            targetGrid.innerHTML = '';
+
+            // 设置容器尺寸和缝隙
+            [puzzleGrid, targetGrid].forEach(container => {
+                container.style.gridTemplateColumns = `repeat(3, ${pieceSize}px)`;
+                container.style.gap = `${pieceSize * 0.04}px`; // 动态计算缝隙（块尺寸的4%）
+            });
+
+            // 生成目标区域占位块
+            Array.from({ length: 9 }, (_, i) => i).forEach(targetIndex => {
+                const placeholder = document.createElement('div');
+                placeholder.className = `puzzle-piece target-placeholder`;
+                placeholder.style.width = `${pieceSize}px`;
+                placeholder.style.height = `${pieceSize}px`;
+                placeholder.dataset.targetIndex = targetIndex;
+                placeholder.textContent = `位置${targetIndex + 1}`;
+                targetGrid.appendChild(placeholder);
+                setupDropZone(placeholder); // 设置可放置区域
+            });
+
+            // 生成打乱的拼图块
+            const correctPositions = Array.from({ length: 9 }, (_, i) => i);
+            const shuffledPositions = [...correctPositions].sort(() => Math.random() - 0.5);
+            
+            shuffledPositions.forEach((correctIndex, currentIndex) => {
+                const piece = createPuzzlePiece(pieceSize, correctIndex, imgSize);
+                piece.dataset.source = 'puzzle'; // 标记来源为拼图区
+                piece.addEventListener('dragstart', handleDragStart);
+                piece.addEventListener('dragend', handleDragEnd);
+                puzzleGrid.appendChild(piece);
+                pieces.push(piece);
+            });
+        }
+
+        // 创建拼图块的通用函数
+        function createPuzzlePiece(pieceSize, correctIndex, imgSize) {
+            const piece = document.createElement('div');
+            piece.className = 'puzzle-piece';
+            piece.draggable = true;
+            piece.style.width = `${pieceSize}px`;
+            piece.style.height = `${pieceSize}px`;
+            piece.dataset.correctIndex = correctIndex;
+
+            // 计算切片位置
+            const x = (correctIndex % 3) * pieceSize;
+            const y = Math.floor(correctIndex / 3) * pieceSize;
+            piece.style.backgroundImage = `url(${sourceImage.src})`;
+            piece.style.backgroundPosition = `-${x}px -${y}px`;
+            piece.style.backgroundSize = `${imgSize}px ${imgSize}px`;
+
+            // 随机旋转
+            const rotation = [0, 90, 180, 270][Math.floor(Math.random() * 4)];
+            piece.style.transform = `rotate(${rotation}deg)`;
+            piece.dataset.rotation = rotation;
+
+            // 点击旋转
+            piece.addEventListener('click', () => {
+            let rot = parseInt(piece.dataset.rotation) || 0;
+            rot = (rot + 90) % 360;
+            piece.style.transform = `rotate(${rot}deg)`;
+            piece.dataset.rotation = rot;
+            
+            // 立即触发正确性检查
+            if (piece.dataset.source === 'target') {
+                const targetIndex = Array.from(targetGrid.children).indexOf(piece);
+                checkPiecePosition(piece, targetIndex);
+            }
+        });
+
+            return piece;
+        }
+
+        // 拖拽开始处理
+        function handleDragStart(e) {
+            e.dataTransfer.setData('text/plain', JSON.stringify({
+                index: Array.from(this.parentElement.children).indexOf(this),
+                source: this.dataset.source
+            }));
+            this.classList.add('dragging');
+        }
+
+        // 拖拽结束处理
+        function handleDragEnd() {
+            this.classList.remove('dragging');
+        }
+
+        // 设置可放置区域的事件
+        function setupDropZone(zone) {
+            zone.addEventListener('dragover', (e) => {
+                e.preventDefault();
+                e.dataTransfer.dropEffect = 'move';
+                zone.style.backgroundColor = '#eff6ff';
+            });
+
+            zone.addEventListener('dragleave', () => {
+                zone.style.backgroundColor = '';
+            });
+
+            zone.addEventListener('drop', (e) => {
+                e.preventDefault();
+                zone.style.backgroundColor = '';
+                const dragData = JSON.parse(e.dataTransfer.getData('text/plain'));
+                const sourceElement = dragData.source === 'puzzle' 
+                    ? puzzleGrid.children[dragData.index] 
+                    : targetGrid.children[dragData.index];
+
+                // 允许目标区域内拖拽交换（修复后的核心逻辑）
+                if (dragData.source === 'target') {
+                    const draggedElement = sourceElement;
+                    const targetZone = zone;
+
+                    // 创建临时占位符进行交换
+                    const temp = document.createElement('div');
+                    targetZone.replaceWith(temp);
+                    draggedElement.replaceWith(targetZone);
+                    temp.replaceWith(draggedElement);
+                    temp.remove();
+                } else {
+                    zone.replaceWith(sourceElement);
+                    sourceElement.dataset.source = 'target';
+                    sourceElement.addEventListener('dragstart', handleDragStart);
+                }
+
+                // 检查位置是否正确
+                checkPiecePosition(sourceElement, zone.dataset.targetIndex);
+            });
+        }
+
+        // 检查拼图块位置是否正确
+        function checkPiecePosition(piece, targetIndex) {
+        const isPositionCorrect = piece.dataset.correctIndex === targetIndex;
+        const isRotationCorrect = parseInt(piece.dataset.rotation) === 0; // 必须0度才算正确
+        const isFullyCorrect = isPositionCorrect && isRotationCorrect;
+
+        piece.classList.toggle('correct-position', isFullyCorrect); // 仅当位置和旋转都正确时标记
+
+        // 检查整体完成度时同时验证旋转
+        const allCorrect = Array.from(targetGrid.children).every(child => {
+            const correctIndexMatch = child.dataset.correctIndex === child.parentElement.dataset.targetIndex;
+            const rotationMatch = parseInt(child.dataset.rotation) === 0;
+            return correctIndexMatch && rotationMatch;
+        });
+
+            if (allCorrect) {
+                alert('🎉 恭喜！所有拼图归位成功！');
+                // 自动旋转回0度
+                targetGrid.querySelectorAll('.puzzle-piece').forEach(piece => {
+                    piece.style.transform = 'rotate(0deg)';
+                    piece.dataset.rotation = 0;
+                });
+            }
+        }
+    </script>
