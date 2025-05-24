@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>手机拼图游戏（iOS 触控修复）</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { background: #f8fafc; padding: 1rem; font-family: 'Inter', sans-serif; }
+    .container { max-width: 100%; margin: 0 auto; }
+    .upload-btn {
+      display: block; width: 100%;
+      padding: 1rem; background: #2563eb; color: white;
+      text-align: center; border: none; border-radius: 0.5rem;
+      font-size: 1rem; cursor: pointer; transition: background 0.3s;
+      margin-bottom: 1rem;
+    }
+    .upload-btn:active { background: #1d4ed8; }
+    .game-grid { display: grid; grid-template-columns: 1fr; gap: 1rem; }
+    .section {
+      background: white; padding: 1rem; border-radius: 0.75rem;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.05);
+    }
+    .title { text-align: center; font-size: 1.1rem; margin-bottom: 0.5rem; }
+    .puzzle-container {
+      display: grid; grid-template-columns: repeat(3, 1fr);
+      gap: 0.25rem; width: fit-content; margin: 0 auto;
+    }
+    .slot {
+      position: relative; background: #f1f5f9;
+      width: 100%; aspect-ratio: 1/1; overflow: hidden;
+    }
+    .target-slot { border: 1px dashed #94a3b8; }
+    .puzzle-piece {
+      background-size: cover; background-repeat: no-repeat;
+      border: 2px solid transparent; width: 100%; height: 100%;
+      touch-action: none; /* allow pointer events */
+    }
+    .puzzle-piece.dragging { opacity: 0.7; }
+    .correct-position {
+      border-color: #22c55e;
+      box-shadow: 0 0 0 2px rgba(34,197,94,0.3);
+    }
+    @media (min-width:600px) {
+      .upload-btn { width: auto; }
+      .game-grid { gap: 2rem; }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <input type="file" id="uploadInput" accept="image/*" hidden />
+    <label for="uploadInput" class="upload-btn">上传 1:1 图片开始游戏</label>
+    <div class="game-grid">
+      <div class="section">
+        <h3 class="title">打乱的拼图</h3>
+        <div class="puzzle-container" id="puzzleGrid"></div>
+      </div>
+      <div class="section">
+        <h3 class="title">目标区域</h3>
+        <div class="puzzle-container" id="targetGrid"></div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const uploadInput = document.getElementById('uploadInput');
+    const puzzleGrid   = document.getElementById('puzzleGrid');
+    const targetGrid   = document.getElementById('targetGrid');
+    let sourceImage;
+
+    uploadInput.addEventListener('change', e => {
+      const file = e.target.files[0];
+      if (!file || !file.type.startsWith('image/')) {
+        return alert('请选择图片文件！');
+      }
+      const fr = new FileReader();
+      fr.onload = () => {
+        const img = new Image();
+        img.onload = () => {
+          if (img.width !== img.height) {
+            return alert('请上传 1:1 比例的图片！');
+          }
+          sourceImage = img;
+          initGame(img.width);
+        };
+        img.src = fr.result;
+      };
+      fr.readAsDataURL(file);
+    });
+
+    function initGame(imgSize) {
+      const padding = 32;
+      const maxW = Math.min(window.innerWidth - padding, imgSize);
+      const pieceSize = Math.floor(maxW / 3);
+
+      puzzleGrid.innerHTML = '';
+      targetGrid.innerHTML = '';
+
+      [puzzleGrid, targetGrid].forEach(c => {
+        c.style.gridTemplateColumns = `repeat(3, ${pieceSize}px)`;
+        c.style.gap = `${pieceSize * 0.04}px`;
+      });
+
+      // 目标槽
+      for (let i = 0; i < 9; i++) {
+        const slot = document.createElement('div');
+        slot.className = 'slot target-slot';
+        slot.dataset.index = i;
+        targetGrid.appendChild(slot);
+      }
+
+      // 打乱区
+      const order = [...Array(9).keys()].sort(() => Math.random() - 0.5);
+      for (let i = 0; i < 9; i++) {
+        const slot = document.createElement('div');
+        slot.className = 'slot';
+        puzzleGrid.appendChild(slot);
+
+        const piece = makePiece(pieceSize, order[i]);
+        slot.appendChild(piece);
+      }
+    }
+
+    function makePiece(size, correctIdx) {
+      const p = document.createElement('div');
+      p.className = 'puzzle-piece';
+      p.dataset.correct = correctIdx;
+
+      const x = (correctIdx % 3) * size;
+      const y = Math.floor(correctIdx / 3) * size;
+      p.style.backgroundImage = `url(${sourceImage.src})`;
+      p.style.backgroundPosition = `-${x}px -${y}px`;
+      p.style.backgroundSize = `${size * 3}px ${size * 3}px`;
+
+      const rots = [0, 90, 180, 270];
+      const r = rots[Math.floor(Math.random() * 4)];
+      p.style.transform = `rotate(${r}deg)`;
+      p.dataset.rot = r;
+
+      // attach unified pointer/tap handler
+      attachPointerHandlers(p);
+
+      return p;
+    }
+
+    // Rotation helper
+    function rotatePiece(p) {
+      let nr = (parseInt(p.dataset.rot) + 90) % 360;
+      p.dataset.rot = nr;
+      p.style.transform = `rotate(${nr}deg)`;
+      const par = p.parentElement;
+      if (par.classList.contains('target-slot')) {
+        checkPiece(p, par.dataset.index);
+      }
+    }
+
+    // Drag helpers
+    let dragPt = {dx:0, dy:0}, origSlot;
+
+    function startActualDrag(e, p) {
+      const rect = p.getBoundingClientRect();
+      const docLeft = rect.left + window.scrollX;
+      const docTop  = rect.top  + window.scrollY;
+      dragPt.dx = e.pageX - docLeft;
+      dragPt.dy = e.pageY - docTop;
+      origSlot = p.parentElement;
+
+      p.classList.add('dragging');
+      p.style.position = 'absolute';
+      p.style.width  = `${rect.width}px`;
+      p.style.height = `${rect.height}px`;
+      p.style.zIndex = 1000;
+      document.body.appendChild(p);
+      moveAt(e.pageX, e.pageY, p);
+    }
+
+    function doDrag(e) {
+      moveAt(e.pageX, e.pageY, e.currentTarget);
+    }
+
+    function endActualDrag(e, p) {
+      p.classList.remove('dragging');
+      p.releasePointerCapture(e.pointerId);
+
+      // temporarily hide to detect drop target
+      p.style.visibility = 'hidden';
+      const dropEl = document.elementFromPoint(e.clientX, e.clientY);
+      p.style.visibility = '';
+
+      const slot = dropEl && dropEl.closest('.target-slot');
+      if (slot && !slot.querySelector('.puzzle-piece')) {
+        slot.appendChild(p);
+        p.style.position = 'static';
+        p.style.zIndex   = '';
+        checkPiece(p, slot.dataset.index);
+      } else {
+        origSlot.appendChild(p);
+        p.style.position = 'static';
+        p.style.zIndex   = '';
+      }
+    }
+
+    function moveAt(pageX, pageY, p) {
+      p.style.left = (pageX - dragPt.dx) + 'px';
+      p.style.top  = (pageY - dragPt.dy) + 'px';
+    }
+
+    // Attach pointer/tap with threshold for drag vs tap
+    function attachPointerHandlers(p) {
+      let startX, startY, dragStarted = false;
+
+      function onDown(e) {
+        e.preventDefault();
+        startX = e.pageX; startY = e.pageY;
+        dragStarted = false;
+        p.setPointerCapture(e.pointerId);
+        p.addEventListener('pointermove', onMove);
+        p.addEventListener('pointerup', onUp);
+      }
+
+      function onMove(e) {
+        const dx = e.pageX - startX, dy = e.pageY - startY;
+        const dist = Math.hypot(dx, dy);
+        if (!dragStarted && dist > 10) {
+          dragStarted = true;
+          startActualDrag(e, p);
+        }
+        if (dragStarted) {
+          doDrag(e);
+        }
+      }
+
+      function onUp(e) {
+        p.removeEventListener('pointermove', onMove);
+        p.removeEventListener('pointerup', onUp);
+        if (!dragStarted) {
+          rotatePiece(p);
+        } else {
+          endActualDrag(e, p);
+        }
+      }
+
+      p.addEventListener('pointerdown', onDown);
+    }
+
+    function checkPiece(p, idx) {
+      const okPos = p.dataset.correct == idx;
+      const okRot = parseInt(p.dataset.rot) === 0;
+      p.classList.toggle('correct-position', okPos && okRot);
+
+      const done = [...document.querySelectorAll('.target-slot')].every(s => {
+        const pc = s.querySelector('.puzzle-piece');
+        return pc && pc.dataset.correct == s.dataset.index && parseInt(pc.dataset.rot) === 0;
+      });
+      if (done) setTimeout(() => alert('🎉 恭喜完成！'), 100);
+    }
+  </script>
+</body>
+</html>
